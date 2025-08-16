@@ -5,10 +5,14 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-      origin: "https://gamezone-avan.netlify.app",
-      methods: ["GET", "POST"]
-    }
+   
+  origin:[
+      'https://chat-application-henna-iota.vercel.app',
+      'https://www.avansingh.in',
+      'http://localhost:5173',
+      'https://game-application-blond.vercel.app'
+    ],
+  credentials: true
   });
 
 io.on('connection', (socket) => {
