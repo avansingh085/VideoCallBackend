@@ -5,15 +5,16 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-   
-  origin:[
+  cors: {
+    origin: [
       'https://chat-application-henna-iota.vercel.app',
       'https://www.avansingh.in',
       'http://localhost:5173',
       'https://game-application-blond.vercel.app'
     ],
-  credentials: true
-  });
+    credentials: true
+  }
+});
 
 io.on('connection', (socket) => {
   let currentRoom = null;
