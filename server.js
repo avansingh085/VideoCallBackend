@@ -23,6 +23,9 @@ const io = new Server(server, {
   }
 });
 
+app.get('/health',(req,res)=>{
+  return res.status(200).send('Server is healthy');
+})
 let rooms = {};
 
 io.on('connection', (socket) => {
