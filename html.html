@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Group Video Call Test</title>
+  
+    <script src="https://cdn.tailwindcss.com"></script>
+   
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+       
+        #video-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 1rem;
+            flex: 1;
+            overflow-y: auto;
+        }
+        .video-container {
+            position: relative;
+            background-color: #000;
+            border-radius: 0.5rem;
+            overflow: hidden;
+            aspect-ratio: 16 / 9;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .video-label {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            font-size: 0.875rem;
+            border-top-right-radius: 0.5rem;
+        }
+        .btn {
+            @apply px-4 py-2 rounded-lg font-semibold text-white transition-all duration-200;
+        }
+        .btn-green {
+            @apply bg-green-500 hover:bg-green-600;
+        }
+        .btn-red {
+            @apply bg-red-500 hover:bg-red-600;
+        }
+        .btn-gray {
+            @apply bg-gray-600 hover:bg-gray-700;
+        }
+    </style>
+</head>
+<body class="h-full flex items-center justify-center text-white p-4">
+
+  
+    <div id="setup-ui" class="w-full max-w-sm">
+        <div class="bg-gray-800 p-6 rounded-xl shadow-lg">
+            <h1 class="text-2xl font-bold text-center mb-4">Group Video Call</h1>
+            <p class="text-sm text-gray-400 mb-4 text-center">Open this in multiple tabs to test the group call.</p>
+            <div class="space-y-4">
+                <input id="room-id" type="text" placeholder="Enter Room ID" class="w-full px-3 py-2 bg-gray-700 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white">
+                <button id="join-room" class="btn btn-green w-full">Join Room</button>
+            </div>
+            <p id="setup-error" class="text-red-400 text-sm mt-4 text-center"></p>
+        </div>
+    </div>
+
+    <div id="call-ui" class="w-full h-full max-w-7xl bg-gray-800 rounded-xl shadow-lg overflow-hidden flex flex-col" style="display: none;">
+       
+        <div class="p-4 bg-gray-900 flex justify-between items-center">
+            <h2 class="text-lg font-semibold">Room: <span id="room-name" class="font-mono"></span></h2>
+            <h2 class="text-lg font-semibold capitalize" id="my-socket-id"></h2>
+        </div>
+
+        <div id="video-grid" class="p-4">
+           
+        </div>
+
+        <div class="p-4 bg-gray-900 flex justify-center items-center space-x-3">
+            <button id="toggle-mute" class="btn btn-gray">Mute</button>
+            <button id="toggle-video" class="btn btn-gray">Stop Video</button>
+            <button id="end-call" class="btn btn-red">End Call</button>
+        </div>
+    </div>
+
+    <script>
+       
+        const SERVER_URL = 'http://localhost:5000';
+        
+        let socket;
+        let localStream;
+        let roomId;
+        let isMuted = false;
+        let isVideoOn = true;
+
+        const peerConnections = new Map();
+
+        
+        const setupUI = document.getElementById('setup-ui');
+        const callUI = document.getElementById('call-ui');
+        const videoGrid = document.getElementById('video-grid');
+        const roomIdInput = document.getElementById('room-id');
+        const roomName = document.getElementById('room-name');
+        const setupError = document.getElementById('setup-error');
+        const mySocketIdEl = document.getElementById('my-socket-id');
+
+        const joinRoomBtn = document.getElementById('join-room');
+        const toggleMuteBtn = document.getElementById('toggle-mute');
+        const toggleVideoBtn = document.getElementById('toggle-video');
+        const endCallBtn = document.getElementById('end-call');
+
+        function showCallUI() {
+            setupUI.style.display = 'none';
+            callUI.style.display = 'flex';
+        }
+
+        function showSetupUI() {
+            callUI.style.display = 'none';
+            setupUI.style.display = 'block';
+            videoGrid.innerHTML = ''; 
+        }
+
+        function addVideoStream(socketId, stream, isLocal = false) {
+           
+            if (document.getElementById(`video-${socketId}`)) return;
+
+            const container = document.createElement('div');
+            container.id = `container-${socketId}`;
+            container.className = 'video-container';
+
+            const video = document.createElement('video');
+            video.id = `video-${socketId}`;
+            video.srcObject = stream;
+            video.autoplay = true;
+            video.playsInline = true;
+            if (isLocal) {
+                video.muted = true; 
+            }
+
+            const label = document.createElement('div');
+            label.className = 'video-label';
+            label.textContent = isLocal ? `You (${socketId})` : `User (${socketId})`;
+
+            container.appendChild(video);
+            container.appendChild(label);
+            videoGrid.appendChild(container);
+        }
+
+        function removeVideoStream(socketId) {
+            const container = document.getElementById(`container-${socketId}`);
+            if (container) {
+                container.remove();
+            }
+        }
+
+        async function startLocalMedia() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                addVideoStream('local', localStream, true);
+            } catch (error) {
+                console.error('Error getting local media:', error);
+                setupError.textContent = 'Could not access camera/mic. Please check permissions.';
+                throw error; 
+            }
+        }
+
+        function createPeerConnection(targetSocketId, isOfferor) {
+            const pc = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+           
+            localStream.getTracks().forEach(track => {
+                pc.addTrack(track, localStream);
+            });
+
+            
+            pc.ontrack = (event) => {
+                addVideoStream(targetSocketId, event.streams[0]);
+            };
+
+          
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('webrtc-candidate', {
+                        candidate: event.candidate,
+                        targetSocketId
+                    });
+                }
+            };
+
+           
+            peerConnections.set(targetSocketId, pc);
+            console.log(`Created PC for ${targetSocketId}`);
+
+            if (isOfferor) {
+                pc.createOffer()
+                    .then(offer => pc.setLocalDescription(offer))
+                    .then(() => {
+                        socket.emit('webrtc-offer', {
+                            offer: pc.localDescription,
+                            targetSocketId
+                        });
+                    })
+                    .catch(e => console.error('Error creating offer:', e));
+            }
+
+            return pc;
+        }
+
+        function closePeerConnection(socketId) {
+            const pc = peerConnections.get(socketId);
+            if (pc) {
+                pc.close();
+                peerConnections.delete(socketId);
+                removeVideoStream(socketId);
+                console.log(`Closed PC for ${socketId}`);
+            }
+        }
+
+        function setupSocketListeners() {
+            socket.on('connect', () => {
+                mySocketIdEl.textContent = `My ID: ${socket.id}`;
+            });
+
+           
+            socket.on('all-users', (allUserSocketIds) => {
+                console.log('Got all users:', allUserSocketIds);
+                allUserSocketIds.forEach(targetSocketId => {
+                    // Create a PC and send an offer to each existing user
+                    createPeerConnection(targetSocketId, true);
+                });
+            });
+
+            // Fired when a *new* user joins *after* us
+            socket.on('user-joined', (newSocketId) => {
+                console.log('User joined:', newSocketId);
+               
+            });
+
+            socket.on('webrtc-offer', async ({ offer, senderSocketId }) => {
+                console.log(`Receiving offer from ${senderSocketId}`);
+               
+                const pc = createPeerConnection(senderSocketId, false);
+                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                
+                socket.emit('webrtc-answer', {
+                    answer: pc.localDescription,
+                    targetSocketId: senderSocketId
+                });
+            });
+
+            socket.on('webrtc-answer', async ({ answer, senderSocketId }) => {
+                console.log(`Receiving answer from ${senderSocketId}`);
+                const pc = peerConnections.get(senderSocketId);
+                if (pc) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                }
+            });
+
+          
+            socket.on('webrtc-candidate', async ({ candidate, senderSocketId }) => {
+                const pc = peerConnections.get(senderSocketId);
+                if (pc) {
+                    try {
+                        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                    } catch (e) {
+                        console.error('Error adding ICE candidate:', e);
+                    }
+                }
+            });
+
+            // Fired when any user disconnects
+            socket.on('user-disconnected', (disconnectedSocketId) => {
+                console.log('User disconnected:', disconnectedSocketId);
+                closePeerConnection(disconnectedSocketId);
+            });
+        }
+
+        joinRoomBtn.onclick = async () => {
+            roomId = roomIdInput.value.trim();
+            if (!roomId) {
+                setupError.textContent = 'Please enter a Room ID.';
+                return;
+            }
+            setupError.textContent = '';
+            roomName.textContent = roomId;
+
+            try {
+               
+                await startLocalMedia();
+                
+              
+                showCallUI();
+
+                // 3. Connect to socket server
+                socket = io(SERVER_URL);
+                setupSocketListeners();
+                
+                // 4. Join the room
+                socket.emit('join-room', roomId);
+
+            } catch (error) {
+                // Error already handled in startLocalMedia
+                showSetupUI();
+            }
+        };
+
+        function handleEndCall() {
+            // Close all peer connections
+            peerConnections.forEach((pc, socketId) => {
+                closePeerConnection(socketId);
+            });
+
+            // Stop local media tracks
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                localStream = null;
+            }
+
+            // Disconnect from socket
+            if (socket) {
+                socket.emit('hang-up'); // Tell server we are leaving
+                socket.disconnect();
+                socket = null;
+            }
+
+            // Reset UI
+            showSetupUI();
+        }
+
+        endCallBtn.onclick = handleEndCall;
+
+        toggleMuteBtn.onclick = () => {
+            if (!localStream) return;
+            isMuted = !isMuted;
+            localStream.getAudioTracks().forEach(track => (track.enabled = !isMuted));
+            toggleMuteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
+            toggleMuteBtn.classList.toggle('btn-red', isMuted);
+            toggleMuteBtn.classList.toggle('btn-gray', !isMuted);
+        };
+
+        toggleVideoBtn.onclick = () => {
+            if (!localStream) return;
+            isVideoOn = !isVideoOn;
+            localStream.getVideoTracks().forEach(track => (track.enabled = isVideoOn));
+            toggleVideoBtn.textContent = isVideoOn ? 'Stop Video' : 'Start Video';
+            toggleVideoBtn.classList.toggle('btn-red', !isVideoOn);
+            toggleVideoBtn.classList.toggle('btn-gray', isVideoOn);
+        };
+
+        // Initial UI setup
+        showSetupUI();
+    </script>
+</body>
+</html>
